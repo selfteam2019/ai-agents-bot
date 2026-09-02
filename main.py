@@ -19,21 +19,13 @@ WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "buraydah123")
 
 client = None
-# قائمة الموديلات الشغالة حالياً - نجربها بالترتيب
-WORKING_MODELS = [
-    "llama-3.1-8b-instant",           # الأسرع والأضمن للمجاني
-    "openai/gpt-oss-20b",             # الجديد من Groq - مجاني
-    "openai/gpt-oss-120b",            # الأقوى 120B
-    "llama-3.3-70b-versatile",        # قد يكون متقاعد عند البعض
-    "qwen/qwen3-32b",                 # بديل قوي
-]
-model_name = WORKING_MODELS[0]
+model_name = "llama-3.1-8b-instant"  # أسرع موديل مجاني وشغال حالياً
 
 if GROQ_KEY:
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
-        print(f"✅ Groq client created - Default Model: {model_name}")
+        print(f"✅ Groq client created - Model: {model_name}")
     except Exception as e:
         print(f"⚠️ Groq failed, trying OpenAI compatible: {e}")
         try:
@@ -115,33 +107,19 @@ def health():
 def chat_endpoint(req: ChatRequest):
     if not client:
         return {"reply": "❌ GROQ_API_KEY غير موجود. روح Render > Environment > Add Variable > GROQ_API_KEY = gsk_..."}
-    
-    last_error = None
-    for current_model in WORKING_MODELS:
-        try:
-            print(f"🔄 Trying model: {current_model}")
-            res = client.chat.completions.create(
-                model=current_model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": req.message}
-                ],
-                temperature=0.6,
-                max_tokens=3000
-            )
-            print(f"✅ Success with {current_model}")
-            return {"reply": res.choices[0].message.content, "model_used": current_model}
-        except Exception as e:
-            last_error = str(e)
-            print(f"❌ Failed {current_model}: {e}")
-            # إذا خطأ موديل غير موجود، جرب اللي بعده
-            if "model" in last_error.lower() or "decommissioned" in last_error.lower() or "not_found" in last_error.lower() or "404" in last_error:
-                continue
-            else:
-                # خطأ آخر (مثلاً رصيد أو rate limit) لا تجرب باقي الموديلات
-                break
-    
-    return {"reply": f"❌ كل الموديلات فشلت. آخر خطأ: {last_error}\n\nجرب موديلات: {', '.join(WORKING_MODELS)}"}
+    try:
+        res = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": req.message}
+            ],
+            temperature=0.6,
+            max_tokens=3000
+        )
+        return {"reply": res.choices[0].message.content}
+    except Exception as e:
+        return {"reply": f"❌ خطأ Groq: {str(e)}"}
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
