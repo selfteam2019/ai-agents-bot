@@ -217,8 +217,8 @@ def get_stock_deep(symbol_or_name: str) -> Dict:
         sma20 = round(sma20_list[-1],2) if sma20_list[-1] else None
         sma50 = round(sum(closes_clean[-50:])/50,2) if len(closes_clean)>=50 else None
         rsi = calc_rsi(closes_clean, 14)
-        recent_high = round(max(highs_clean[-20:]),2) if len(highs_clean)>=20 else round(max(highs_clean),2))
-        recent_low = round(min(lows_clean[-20:]),2) if len(lows_clean)>=20 else round(min(lows_clean),2))
+        recent_high = round(max(highs_clean[-20:]),2) if len(highs_clean)>=20 else round(max(highs_clean),2)
+        recent_low = round(min(lows_clean[-20:]),2) if len(lows_clean)>=20 else round(min(lows_clean),2)
         high_3m = round(max(closes_clean),2)
         low_3m = round(min(closes_clean),2)
         perf_1w = round((closes_clean[-1]/closes_clean[-5]-1)*100,2) if len(closes_clean)>=5 else None
