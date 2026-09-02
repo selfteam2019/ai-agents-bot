@@ -1,10 +1,16 @@
 """
-AI Agents Bot - V3.2 Groq - Llama 3.1 70B -> Llama 3.3 70B
-Llama 3.1 70B تم إيقافه رسمياً في Groq يوم 16 أغسطس 2026
-البديل الرسمي: Llama 3.3 70B (نفس المعمارية + أداء أفضل)
+AI Agents Bot - V4.0 Stocks - متابعة أسهم لحظية
+المميزات:
+- أسعار لحظية للسوق السعودي (تداول) + الأمريكي
+- تحليل فني سريع + تنبيهات
+- تكامل مع الشات: إذا سألت عن سهم يجيب سعره لحظياً
 """
 import os
-from fastapi import FastAPI, Request
+import re
+import time
+from datetime import datetime
+from typing import Optional, List, Dict
+from fastapi import FastAPI, Request, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import requests
@@ -12,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="AI Agents Bot - V3.2 Groq Llama 3.3", version="3.2")
+app = FastAPI(title="AI Agents Bot - V4 Stocks", version="4.0")
 
 GROQ_KEY = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
@@ -20,142 +26,286 @@ WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "buraydah123")
 
 client = None
-
-# Llama 3.1 70B تم إيقافه - هذه البدائل الرسمية من Groq
-# حسب Groq Docs: Llama 3.3 70B هو البديل المباشر لنفس المعمارية مع تحسينات
-WORKING_MODELS = [
-    "llama-3.3-70b-versatile",                 # البديل المباشر لـ Llama 3.1 70B - نفس الحجم، أداء أفضل
-    "openai/gpt-oss-20b",                     # توصية Groq الجديدة للمجاني
-    "openai/gpt-oss-120b",                    # الأقوى 120B
-    "meta-llama/llama-4-maverick-17b-128e-instruct",  # Llama 4 الجديد
-    "llama-3.1-8b-instant",                   # السريع - قد يكون متقاعد أيضاً
-]
-
-model_name = WORKING_MODELS[0]
+model_name = "llama-3.1-8b-instant"
 
 if GROQ_KEY:
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
-        print(f"✅ Groq client - Llama 3.1 70B -> {model_name} (successor)")
+        print(f"✅ Groq client - {model_name}")
     except Exception as e:
-        print(f"⚠️ Groq init failed: {e}")
         try:
             from openai import OpenAI
             client = OpenAI(api_key=GROQ_KEY, base_url="https://api.groq.com/openai/v1")
             print("✅ Groq via OpenAI client")
         except Exception as e2:
-            print(f"❌ Failed: {e2}")
+            print(f"❌ Groq failed: {e2}")
             client = None
+
+# ========== إعدادات الأسهم ==========
+# خريطة رموز سعودية مشهورة -> رمز Yahoo
+SAUDI_SYMBOLS = {
+    "ارامكو": "2222.SR", "أرامكو": "2222.SR", "ARAMCO": "2222.SR", "2222": "2222.SR",
+    "الراجحي": "1120.SR", "راجحي": "1120.SR", "1120": "1120.SR",
+    "سابك": "2010.SR", "2010": "2010.SR",
+    "STC": "7010.SR", "الاتصالات": "7010.SR", "7010": "7010.SR",
+    "الاهلي": "1180.SR", "SNB": "1180.SR", "1180": "1180.SR",
+    "لوسيد": "LCID", "تسلا": "TSLA", "ابل": "AAPL", "نيو": "NIO",
+    "مايكروستراتيجي": "MSTR", "بيتكوين": "BTC-USD", "الذهب": "GC=F"
+}
 
 class ChatRequest(BaseModel):
     message: str
 
 SYSTEM_PROMPT = """
-أنت مساعد AI Agents - بوت ذكي في السعودية.
-
-كنت تعمل على Llama 3.1 70B، الآن تم ترقيتك إلى Llama 3.3 70B (نفس المعمارية 70B مع تحسينات في الاستدلال والبرمجة والرياضيات).
+أنت مساعد AI Agents - بوت ذكي في السعودية، متخصص في التقارير والبرمجة والأسهم.
 
 مهامك:
-1. [تقرير] إذا طلب تقرير: اكتب تقرير احترافي (ملخص تنفيذي + نقاط رئيسية + توصيات + أرقام تقريبية)
-2. [كود] إذا طلب برمجة: اكتب الكود مع شرح عربي مختصر وتعليقات داخل الكود
-3. تحدث عربية بلهجة سعودية خفيفة، ردودك مختصرة للواتساب إلا إذا طلب تفصيل
-4. أنت سريع جداً بفضل Groq LPU
+1. [تقرير] إذا طلب تقرير: اكتب تقرير احترافي
+2. [كود] إذا طلب برمجة: اكتب الكود مع شرح عربي
+3. [سهم] إذا سأل عن سهم: إذا أعطيتك بيانات السعر، حللها (هل مرتفع/منخفض، دعم ومقاومة، نصيحة سريعة غير ملزمة)
+4. تحدث عربية بلهجة سعودية خفيفة، ردودك مختصرة للواتساب
+5. تنبيه: معلومات الأسهم للتوعية فقط وليست نصيحة استثمارية
 """
 
+# ========== دوال الأسهم ==========
+def get_stock_price(symbol: str) -> Dict:
+    """يجيب سعر سهم من Yahoo Finance بدون مفتاح"""
+    symbol = symbol.strip().upper()
+    # تحويل الرموز العربية
+    if symbol in SAUDI_SYMBOLS:
+        symbol = SAUDI_SYMBOLS[symbol]
+    # إذا رقم سعودي بدون .SR أضفها
+    if symbol.isdigit() and len(symbol) == 4:
+        symbol = f"{symbol}.SR"
+    
+    try:
+        # Yahoo Finance API المجاني (v8)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        params = {"interval": "1d", "range": "1d"}
+        r = requests.get(url, headers=headers, params=params, timeout=8)
+        data = r.json()
+        
+        if "chart" not in data or data["chart"]["error"]:
+            return {"error": f"الرمز {symbol} غير موجود", "symbol": symbol}
+        
+        result = data["chart"]["result"][0]
+        meta = result["meta"]
+        price = meta.get("regularMarketPrice") or meta.get("previousClose")
+        prev_close = meta.get("previousClose")
+        change = price - prev_close if price and prev_close else 0
+        change_pct = (change / prev_close * 100) if prev_close else 0
+        
+        # بيانات إضافية
+        quote = result["indicators"]["quote"][0] if result["indicators"]["quote"] else {}
+        
+        return {
+            "symbol": symbol,
+            "name": meta.get("longName") or meta.get("shortName") or symbol,
+            "price": round(float(price), 2) if price else None,
+            "prev_close": round(float(prev_close), 2) if prev_close else None,
+            "change": round(float(change), 2),
+            "change_pct": round(float(change_pct), 2),
+            "currency": meta.get("currency", "SAR"),
+            "market": meta.get("exchangeName", ""),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "is_saudi": ".SR" in symbol
+        }
+    except Exception as e:
+        return {"error": str(e), "symbol": symbol}
+
+def detect_stock_symbols(text: str) -> List[str]:
+    """يكشف رموز الأسهم في النص"""
+    found = []
+    text_upper = text.upper()
+    
+    # رموز سعودية بالأرقام
+    for m in re.findall(r'\b(\d{4})\b', text):
+        found.append(m)
+    
+    # رموز عربية مشهورة
+    for arabic, sym in SAUDI_SYMBOLS.items():
+        if arabic in text or arabic.upper() in text_upper:
+            found.append(arabic)
+    
+    # رموز أمريكية $AAPL أو سهم تسلا
+    for m in re.findall(r'\$([A-Z]{1,5})\b', text_upper):
+        found.append(m)
+    
+    # كلمات مفتاحية للأسهم
+    stock_keywords = ["سهم", "سعر", "تداول", "ارامكو", "الراجحي", "سابك"]
+    if any(k in text for k in stock_keywords):
+        # إذا ذكر سهم بدون رمز، حاول استخراج
+        if not found:
+            found.append("2222")  # افترض أرامكو كمثال
+    
+    return list(set(found))[:3]  # حد أقصى 3 أسهم
+
+# ========== الواجهة الرئيسية ==========
 @app.get("/", response_class=HTMLResponse)
 def home():
-    status = "✅ Groq مربوط" if client else "❌ يحتاج GROQ_API_KEY"
-    wa_status = "✅ مربوط" if WHATSAPP_TOKEN else "⚠️ غير مربوط"
-    models_html = "".join([f"<span class='badge'>{m}</span>" for m in WORKING_MODELS])
+    status = "✅ Groq" if client else "❌"
+    wa_status = "✅" if WHATSAPP_TOKEN else "⚠️"
     return f"""
     <html dir="rtl" lang="ar"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AI Agents Bot - Llama 3.3 70B</title>
+    <title>AI Agents Bot - V4 Stocks</title>
     <style>
-        body{{font-family:'Segoe UI',Tahoma;background:linear-gradient(135deg,#1a2980 0%,#26d0ce 100%);min-height:100vh;padding:20px;margin:0}}
-        .container{{max-width:950px;margin:auto}}
-        .card{{background:white;padding:25px;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,0.2);margin-bottom:20px}}
-        .badge{{padding:6px 12px;border-radius:20px;font-size:12px;background:#e0f7ff;margin:3px;display:inline-block;border:1px solid #b0e0ff}}
-        .badge-green{{background:#e0ffe0;border-color:#a0e0a0}}
-        .badge-orange{{background:#fff3e0;border-color:#ffcc80}}
-        textarea{{width:100%;padding:14px;border:2px solid #e0e0e0;border-radius:12px;font-size:15px;resize:vertical;box-sizing:border-box}}
-        button{{background:#1a2980;color:white;padding:12px 28px;border:none;border-radius:10px;cursor:pointer;font-weight:bold}}
-        #answer{{background:#f8fbff;padding:16px;border-radius:12px;margin-top:15px;white-space:pre-wrap;line-height:1.8;border:1px solid #d0e8ff;min-height:80px}}
-        .ex{{background:#f0f8ff;padding:7px 13px;border-radius:15px;font-size:12px;cursor:pointer;margin:4px;display:inline-block;border:1px solid #d0e8ff}}
-        .alert{{background:#fff3cd;padding:12px;border-radius:10px;border:1px solid #ffe69c;font-size:13px;margin:10px 0}}
-    </style></head><body><div class="container"><div class="card">
-    <h2>🚀 البوت شغال - Llama 3.3 70B (خليفة Llama 3.1 70B)</h2>
-    <div class="alert">⚠️ <b>Llama 3.1 70B</b> تم إيقافه رسمياً من Groq يوم 16 أغسطس 2026. البديل الرسمي هو <b>Llama 3.3 70B</b> - نفس المعمارية 70B مع أداء أفضل في البرمجة والاستدلال.</div>
-    <div><span class="badge badge-green">{status}</span><span class="badge">WhatsApp: {wa_status}</span><span class="badge badge-green">Live ✅</span></div>
-    <p style="font-size:12px;color:#666">الموديلات المجربة تلقائياً:</p>
-    <div>{models_html}</div>
-    <div style="margin:15px 0">
-        <span class="ex" onclick="setEx('اكتب تقرير عن سوق التمور في القصيم مع أرقام وتوصيات')">📊 تقرير تمور</span>
-        <span class="ex" onclick="setEx('اكتب كود بايثون يحلل مبيعات من ملف اكسل ويرسم بياني مع شرح')">💻 كود تحليل</span>
-        <span class="ex" onclick="setEx('وش أفضل 5 مشاريع صغيرة في بريدة برأس مال 20 ألف؟')">💡 مشاريع بريدة</span>
+        body{{font-family:'Segoe UI',Tahoma;background:linear-gradient(135deg,#0f2027 0%,#203a43 50%,#2c5364 100%);min-height:100vh;padding:20px;margin:0;color:#fff}}
+        .container{{max-width:1000px;margin:auto}}
+        .card{{background:white;color:#222;padding:22px;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,0.3);margin-bottom:18px}}
+        .badge{{padding:5px 11px;border-radius:20px;font-size:12px;background:#e0f7ff;margin:3px;display:inline-block;border:1px solid #b0e0ff}}
+        .badge-green{{background:#d4edda;border-color:#a3d9a5}} .badge-blue{{background:#cce5ff}} .badge-orange{{background:#fff3cd}}
+        .stock-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}}
+        .stock-card{{background:#f8f9ff;border:1px solid #d0e0ff;border-radius:14px;padding:14px;text-align:center;cursor:pointer;transition:0.2s}}
+        .stock-card:hover{{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.1)}}
+        .price{{font-size:22px;font-weight:bold;margin:6px 0}} .up{{color:#28a745}} .down{{color:#dc3545}}
+        textarea{{width:100%;padding:14px;border:2px solid #e0e0e0;border-radius:12px;font-size:14px;box-sizing:border-box}}
+        button{{background:#2c5364;color:white;padding:11px 22px;border:none;border-radius:10px;cursor:pointer;font-weight:bold;margin:3px}}
+        button:hover{{background:#203a43}}
+        #answer{{background:#f8fbff;padding:15px;border-radius:12px;margin-top:12px;white-space:pre-wrap;line-height:1.7;border:1px solid #d0e0ff;min-height:60px;color:#222}}
+        .ex{{background:#eef6ff;padding:6px 12px;border-radius:15px;font-size:11px;cursor:pointer;margin:3px;display:inline-block;border:1px solid #d0e0ff}}
+        input{{padding:10px;border:1px solid #ddd;border-radius:8px;width:120px}}
+    </style></head><body><div class="container">
+    
+    <div class="card">
+        <h2>📈 البوت شغال - V4.0 متابعة أسهم لحظية</h2>
+        <div><span class="badge badge-green">Groq: {status}</span><span class="badge">WhatsApp: {wa_status}</span><span class="badge badge-blue">Stocks: Live ✅</span><span class="badge badge-orange">Model: {model_name}</span></div>
+        
+        <h4 style="margin:15px 0 8px">🔥 أسهم سريعة (اضغط للتحديث):</h4>
+        <div class="stock-grid" id="stocks"></div>
+        
+        <div style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input id="sym" placeholder="رمز مثل 2222 أو AAPL" value="2222">
+            <button onclick="fetchOne()">جلب السعر</button>
+            <button onclick="loadAll()" style="background:#eee;color:#222">تحديث الكل</button>
+        </div>
     </div>
-    <textarea id="msg" rows="4" placeholder="اكتب رسالتك هنا..."></textarea>
-    <div style="margin-top:12px;display:flex;gap:10px">
-        <button onclick="send()">إرسال ⚡ Llama 3.3</button>
-        <button onclick="clearAll()" style="background:#eee;color:#333">مسح</button>
+
+    <div class="card">
+        <h4>💬 اسأل البوت عن أي سهم</h4>
+        <div style="margin:8px 0">
+            <span class="ex" onclick="setEx('كم سعر سهم ارامكو الآن؟')">📊 ارامكو</span>
+            <span class="ex" onclick="setEx('حلل لي سهم الراجحي 1120')">📈 الراجحي</span>
+            <span class="ex" onclick="setEx('وش وضع تسلا اليوم؟')">🚗 تسلا</span>
+            <span class="ex" onclick="setEx('اعطني تقرير عن سابك 2010 مع تحليل')">📝 تقرير سابك</span>
+            <span class="ex" onclick="setEx('قارن بين ارامكو وسابك')">⚖️ مقارنة</span>
+        </div>
+        <textarea id="msg" rows="3" placeholder="مثال: كم سعر ارامكو؟ أو حلل لي سهم 1120"></textarea>
+        <div style="margin-top:10px"><button onclick="send()">إرسال للبوت ⚡</button></div>
+        <div id="answer">الإجابة ستظهر هنا...</div>
     </div>
-    <div id="answer">الإجابة ستظهر هنا...</div></div></div>
+
+    <div class="card" style="font-size:12px">
+        <b>Endpoints جديدة:</b> <code>/stock/2222</code> , <code>/stock/1120</code> , <code>/stock/AAPL</code> , <code>/stocks?symbols=2222,1120,2010</code>
+    </div>
+
+    </div>
     <script>
-        function setEx(t){{document.getElementById('msg').value=t;}}
-        function clearAll(){{document.getElementById('msg').value='';document.getElementById('answer').innerText='الإجابة ستظهر هنا...';}}
-        async function send(){{
-            const msg=document.getElementById('msg').value.trim();if(!msg)return;
-            const ans=document.getElementById('answer');ans.innerText='⚡ يجرب Llama 3.3 70B...';
-            try{{const res=await fetch('/chat',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{message:msg}})}});
-            const data=await res.json();ans.innerText=data.reply+(data.model_used?`\\n\\n---\\nالموديل: ${{data.model_used}}`:'');}}catch(e){{ans.innerText='❌ '+e.message;}}
+        const quick = ["2222","1120","2010","7010","1180","AAPL","TSLA"];
+        async function loadAll(){{
+            const grid=document.getElementById('stocks'); grid.innerHTML='⏳ جاري التحميل...';
+            try{{
+                const res=await fetch('/stocks?symbols='+quick.join(',')); const data=await res.json();
+                grid.innerHTML='';
+                data.forEach(s=>{{
+                    if(s.error) return;
+                    const cls=s.change>=0?'up':'down'; const arrow=s.change>=0?'▲':'▼';
+                    grid.innerHTML+=`<div class="stock-card" onclick="document.getElementById('sym').value='${{s.symbol}}';fetchOne()">
+                        <div style="font-size:12px;color:#666">${{s.name}}</div>
+                        <div style="font-weight:bold">${{s.symbol}}</div>
+                        <div class="price">${{s.price}} <small style="font-size:11px">${{s.currency}}</small></div>
+                        <div class="${{cls}}">${{arrow}} ${{s.change}} (${{s.change_pct}}%)</div>
+                    </div>`;
+                }});
+            }}catch(e){{grid.innerHTML='❌ '+e.message;}}
         }}
+        async function fetchOne(){{
+            const sym=document.getElementById('sym').value.trim(); if(!sym) return;
+            const ans=document.getElementById('answer'); ans.innerText='⏳ جلب '+sym+'...';
+            try{{
+                const res=await fetch('/stock/'+encodeURIComponent(sym)); const data=await res.json();
+                if(data.error) ans.innerText='❌ '+data.error;
+                else ans.innerText=`📈 ${{data.name}} (${{data.symbol}})
+السعر: ${{data.price}} ${{data.currency}}
+التغيير: ${{data.change}} (${{data.change_pct}}%)
+الإغلاق السابق: ${{data.prev_close}}
+السوق: ${{data.market}}
+الوقت: ${{data.time}}`;
+            }}catch(e){{ans.innerText='❌ '+e.message;}}
+        }}
+        function setEx(t){{document.getElementById('msg').value=t;}}
+        async function send(){{
+            const msg=document.getElementById('msg').value.trim(); if(!msg) return;
+            const ans=document.getElementById('answer'); ans.innerText='⚡ البوت يحلل...';
+            try{{
+                const res=await fetch('/chat',{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{message:msg}})}});
+                const data=await res.json(); ans.innerText=data.reply;
+            }}catch(e){{ans.innerText='❌ '+e.message;}}
+        }}
+        loadAll();
     </script></body></html>
     """
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "3.2-llama3.3", "note": "Llama 3.1 70B decommissioned, using Llama 3.3 70B as successor", "groq": bool(client), "models_tried": WORKING_MODELS}
+    return {"status": "ok", "version": "4.0-stocks", "groq": bool(client), "model": model_name, "stocks": "live"}
 
-@app.get("/models")
-def list_models():
-    """يعرض الموديلات المتاحة في حسابك"""
-    if not client:
-        return {"error": "No GROQ_API_KEY"}
-    try:
-        models = client.models.list()
-        return {"available": [m.id for m in models.data], "trying": WORKING_MODELS}
-    except Exception as e:
-        return {"error": str(e), "trying": WORKING_MODELS}
+# ========== Endpoints الأسهم ==========
+@app.get("/stock/{symbol}")
+def stock_one(symbol: str):
+    return get_stock_price(symbol)
 
+@app.get("/stocks")
+def stocks_many(symbols: str = Query(..., description="مثال: 2222,1120,AAPL")):
+    syms = [s.strip() for s in symbols.split(",") if s.strip()][:10]
+    results = [get_stock_price(s) for s in syms]
+    return results
+
+# ========== Chat مع دمج الأسهم ==========
 @app.post("/chat")
 def chat_endpoint(req: ChatRequest):
     if not client:
         return {"reply": "❌ GROQ_API_KEY غير موجود"}
     
-    last_error = None
-    for current_model in WORKING_MODELS:
-        try:
-            print(f"🔄 Trying {current_model}...")
-            res = client.chat.completions.create(
-                model=current_model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": req.message}
-                ],
-                temperature=0.6,
-                max_tokens=3500
-            )
-            print(f"✅ Success: {current_model}")
-            return {"reply": res.choices[0].message.content, "model_used": current_model}
-        except Exception as e:
-            last_error = str(e)
-            print(f"❌ {current_model} failed: {e}")
-            if any(x in last_error.lower() for x in ["model", "decommissioned", "not_found", "does not exist", "404", "400"]):
-                continue
-            else:
-                break
+    # 1. هل الرسالة فيها أسهم؟ جيب أسعارها أولاً
+    detected = detect_stock_symbols(req.message)
+    stock_context = ""
+    if detected:
+        stock_data = []
+        for sym in detected:
+            data = get_stock_price(sym)
+            if "error" not in data:
+                stock_data.append(data)
+        
+        if stock_data:
+            stock_context = "\n\n[بيانات أسهم لحظية من Yahoo Finance]:\n"
+            for d in stock_data:
+                stock_context += f"- {d['name']} ({d['symbol']}): {d['price']} {d['currency']} | التغيير: {d['change']} ({d['change_pct']}%) | إغلاق سابق: {d['prev_close']} | وقت: {d['time']}\n"
+            stock_context += "\nاستخدم هذه البيانات في تحليلك. إذا سأل عن سعر، اذكر السعر الحالي والتغيير. إذا طلب تحليل، حلل بناءً على هذه الأرقام مع تنبيه أن هذا ليس نصيحة استثمارية.\n"
     
-    return {"reply": f"❌ كل الموديلات فشلت.\nآخر خطأ: {last_error}\n\nالموديلات المجربة: {', '.join(WORKING_MODELS)}\n\nملاحظة: Llama 3.1 70B تم إيقافه يوم 16 أغسطس 2026، جرب Llama 3.3 70B أو openai/gpt-oss-20b"}
+    # 2. أرسل للـ LLM مع بيانات الأسهم
+    try:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT + stock_context},
+            {"role": "user", "content": req.message}
+        ]
+        res = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.6,
+            max_tokens=3500
+        )
+        reply = res.choices[0].message.content
+        
+        # إذا فيه بيانات أسهم، أضفها في نهاية الرد بشكل منسق
+        if stock_context and "error" not in stock_context:
+            # لا نكرر إذا البوت ذكرها
+            pass
+        
+        return {"reply": reply, "stocks_detected": detected}
+    except Exception as e:
+        return {"reply": f"❌ خطأ Groq: {str(e)}"}
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
