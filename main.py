@@ -19,7 +19,7 @@ WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "buraydah123")
 
 client = None
-model_name = "llama-3.1-70b-versatile"
+model_name = "llama-3.3-70b-versatile"
 
 if GROQ_KEY:
     try:
@@ -40,7 +40,7 @@ class ChatRequest(BaseModel):
     message: str
 
 SYSTEM_PROMPT = """
-أنت مساعد AI Agents - بوت ذكي في السعودية، تعمل على Groq Llama 3.1.
+أنت مساعد AI Agents - بوت ذكي في السعودية، تعمل على Groq Llama 3.3.
 
 مهامك:
 1. [تقرير] إذا طلب تقرير: اكتب تقرير احترافي (ملخص تنفيذي + نقاط رئيسية + توصيات)
